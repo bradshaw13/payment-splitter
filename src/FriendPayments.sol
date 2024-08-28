@@ -1,20 +1,34 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity 0.8.25;
 
-contract FriendPayments {
-    error MustBeFriendsToRemove();
-    error DuplicateFriendRequest(address from, address to);
+import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
+
+contract FriendPayments is ReentrancyGuard, Ownable {
+    // Errors
     error AlreadyFriends(address from, address to);
+    error AmountPerDebtorGreaterThanZero();
+    error CannotRequestPaymentFromSelf();
+    error DuplicateFriendRequest(address from, address to);
     error FriendRequestMustBeOpenToAccept();
+    error IncorrectPaymentAmount();
+    error InvalidEthPayment();
     error InvalidFriendRequestRescind();
+    error MaximumRequestsOut();
+    error MustBeFriendsToRemove();
+    error NoDebtorsProvided();
+    error NotADebtor();
+    error NotFriends(address notFriendAddress);
+    error PaymentExpired();
+    error NoFriendRequestToReject();
 
-    // Events
-    event FriendRequestSent(address indexed from, address indexed to);
-    event FriendRequestAccepted(address indexed from, address indexed to);
-    event FriendRemoved(address indexed from, address indexed to);
-    event FriendRequestRescinded(address indexed from, address indexed to);
+    // Enums
+    enum DebtorStatus {
+        NotDebtor,
+        InDebt,
+        DebtPaid
+    }
 
-    // It would be cool to issue NFTs if they reach "best friend status"
     enum FriendshipStatus {
         NotFriends, // 0 - No friendship or pending request
         RequestedByMe, // 1 - I have sent a friendship request to them
@@ -22,7 +36,44 @@ contract FriendPayments {
         Friends // 3 - We are friends
     }
 
+    enum PaymentStatus {
+        Active,
+        PartiallyFulfilled,
+        Fulfilled,
+        Expired
+    }
+
+    // Structs
+    struct Payment {
+        uint256 paymentId; // Unique ID for the payment, typically based on a nonce
+        address requestor;
+        string paymentName; // Name of the payment (e.g., "Dinner", "Rent")
+        // address[] debtors; // Array of addresses that owe the user
+        mapping(address debtor => DebtorStatus) debtorStatus; // Mapping to track whether each debtor has paid
+        // mapping(address => uint256) percentageOwed; // Mapping to track percentage of the total owed by each debtor
+        uint256 amountPerDebtor; // Total amount owed by all debtors combined
+        uint256 totalDebtLeft;
+        uint256 expirationTime; // Time when the payment request expires
+        PaymentStatus status;
+    }
+
+    // Events
+    event FriendRemoved(address indexed from, address indexed to);
+    event FriendRequestAccepted(address indexed from, address indexed to);
+    event FriendRequestRescinded(address indexed from, address indexed to);
+    event FriendRequestSent(address indexed from, address indexed to);
+    event FriendRequestRejected(address indexed rejector, address indexed rejected);
+    event PaymentRequested(bytes32 indexed uniqueId, address indexed requestor, string paymentName, address[] debtors);
+
+    // State Variables
+    uint256 public activeRequestCountMax = 20;
+
+    mapping(address user => uint256 count) private paymentCount;
+    mapping(address user => uint256 requestCount) public activeRequestCount;
+    mapping(bytes32 requestId => Payment payment) public paymentRequests;
     mapping(address user => mapping(address friendaddress => FriendshipStatus)) private friendships;
+
+    constructor() Ownable(msg.sender) { }
 
     function sendFriendRequest(address to) external {
         FriendshipStatus friendsStatus = friendships[to][msg.sender];
@@ -77,6 +128,18 @@ contract FriendPayments {
         }
     }
 
+    function rejectFriendRequest(address from) external {
+        FriendshipStatus status = friendships[msg.sender][from];
+
+        if (status == FriendshipStatus.RequestedByThem) {
+            friendships[msg.sender][from] = FriendshipStatus.NotFriends;
+            friendships[from][msg.sender] = FriendshipStatus.NotFriends;
+            emit FriendRequestRejected(msg.sender, from);
+        } else {
+            revert NoFriendRequestToReject();
+        }
+    }
+
     function isFriendsWithMe(address to) external view returns (bool) {
         return (friendships[msg.sender][to] == FriendshipStatus.Friends);
     }
@@ -88,24 +151,6 @@ contract FriendPayments {
         );
     }
 
-    // Mapping to keep track of the number of payments a user has made
-    mapping(address user => uint256 count) private paymentCount;
-    mapping(address => uint256) public activeRequestCount;
-    mapping(bytes32 requestId => Payment payment) public paymentRequests;
-
-    error NoDebtorsProvided();
-    error AmountPerDebtorGreaterThanZero();
-
-    struct Payment {
-        uint256 paymentId; // Unique ID for the payment, typically based on a nonce
-        string paymentName; // Name of the payment (e.g., "Dinner", "Rent")
-        address[] debtors; // Array of addresses that owe the user
-        mapping(address => bool) hasPaid; // Mapping to track whether each debtor has paid
-        // mapping(address => uint256) percentageOwed; // Mapping to track percentage of the total owed by each debtor
-        uint256 amountPerDebtor; // Total amount owed by all debtors combined
-    }
-    // Example function to generate a unique payment identifier
-
     function generateUniquePaymentID(uint256 id) public returns (bytes32) {
         bytes32 uniquePaymentHash = keccak256(abi.encodePacked(msg.sender, id));
         // I think I would rather have this move to at the end of the function. not sure.
@@ -114,44 +159,96 @@ contract FriendPayments {
         return uniquePaymentHash;
     }
 
-    // Function to retrieve the current payment count for a user (for reference)
-    function getPaymentCount(address user) public view returns (uint256) {
-        return paymentCount[user];
-    }
-
     /*´:°•.°+.*•´.*:˚.°*.˚•´.°:°•.°•.*•´.*:˚.°*.˚•´.°:°•.°+.*•´.*:*/
     /*                   PAYMENT OPERATIONS                       */
     /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:´*.´•*.•°.•°:°.´:•˚°.*°.˚:*.´+°.•*/
 
-    // Pay friend
+    function fulfillPayment(bytes32 _paymentId, address debtorToPay) external payable nonReentrant {
+        Payment storage payment = paymentRequests[_paymentId];
 
-    // Request Friend
-    function requestPayment(address[] memory _debtors, string memory _paymentName, uint256 _amountPerDebtor) public {
+        if (payment.status == PaymentStatus.Expired) {
+            revert PaymentExpired();
+        }
+
+        if (payment.debtorStatus[debtorToPay] != DebtorStatus.InDebt) {
+            revert NotADebtor();
+        }
+
+        if (msg.value < payment.amountPerDebtor) {
+            revert IncorrectPaymentAmount();
+        }
+        unchecked {
+            paymentCount[payment.requestor] = paymentCount[payment.requestor] - 1;
+        }
+
+        payment.debtorStatus[debtorToPay] = DebtorStatus.DebtPaid;
+        payment.totalDebtLeft -= payment.amountPerDebtor;
+
+        if (payment.totalDebtLeft == 0) {
+            payment.status = PaymentStatus.Fulfilled;
+        } else {
+            payment.status = PaymentStatus.PartiallyFulfilled;
+        }
+
+        (bool sent, bytes memory data) = payment.requestor.call{ value: msg.value }("");
+        if (!sent) {
+            revert InvalidEthPayment();
+        }
+    }
+
+    function requestPayment(
+        address[] memory _debtors,
+        string memory _paymentName,
+        uint256 _amountPerDebtor,
+        uint256 _expirationTime
+    )
+        public
+    {
+        if (activeRequestCount[msg.sender] > activeRequestCountMax) {
+            revert MaximumRequestsOut();
+        }
         if (_debtors.length == 0) {
             revert NoDebtorsProvided();
         }
         if (_amountPerDebtor == 0) {
             revert AmountPerDebtorGreaterThanZero();
         }
+
         bytes32 uniqueId = generateUniquePaymentID(paymentCount[msg.sender]);
 
         Payment storage newPayment = paymentRequests[uniqueId];
         newPayment.paymentId = paymentCount[msg.sender];
+        newPayment.requestor = msg.sender;
         newPayment.paymentName = _paymentName;
         newPayment.amountPerDebtor = _amountPerDebtor;
-        newPayment.debtors = _debtors;
+        newPayment.totalDebtLeft = _amountPerDebtor * _debtors.length;
+        newPayment.expirationTime = _expirationTime;
+
+        for (uint256 i = 0; i < _debtors.length; i++) {
+            if (_debtors[i] == msg.sender) {
+                revert CannotRequestPaymentFromSelf();
+            }
+            if (friendships[msg.sender][_debtors[i]] != FriendshipStatus.Friends) {
+                revert NotFriends(_debtors[i]);
+            }
+            newPayment.debtorStatus[_debtors[i]] = DebtorStatus.InDebt;
+        }
+
+        emit PaymentRequested(uniqueId, msg.sender, _paymentName, _debtors);
 
         ++paymentCount[msg.sender];
     }
 
     // Expire a request so someone's request count isn't held up because of one person
+    function expirePayment(bytes32 _paymentId) public {
+        Payment storage payment = paymentRequests[_paymentId];
+        if (payment.expirationTime < block.timestamp && payment.status != PaymentStatus.Fulfilled) {
+            payment.status = PaymentStatus.Expired;
+        }
+    }
 
-    // cannot unfriend someone until they have paid all of their debts
-
-    // payment id can be unique based on
-
-    // you can't request unless you are friends, but you can pay them if you are friends
-    // maybe they have to sign a tx to accept a debt to someone
-
-    // activeRequestCount seems to be the way to go for now
+    function changeActiveRequestCountMax(uint256 newMax) external onlyOwner {
+        activeRequestCountMax = newMax;
+    }
 }
+// add a function to allow a debter to pay off multiple debts at once
