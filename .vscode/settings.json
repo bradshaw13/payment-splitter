@@ -1,4 +1,8 @@
 {
+  "solidity.remappings": [
+    "@openzeppelin/contracts/=node_modules/@openzeppelin/contracts/",
+    "forge-std/=node_modules/forge-std/"
+  ],
   "[solidity]": {
     "editor.defaultFormatter": "JuanBlanco.solidity"
   },
