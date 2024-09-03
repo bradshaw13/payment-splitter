@@ -71,12 +71,12 @@ contract FriendPayments is ReentrancyGuard, Ownable {
     mapping(address user => uint256 count) private paymentCount;
     mapping(address user => uint256 requestCount) public activeRequestCount;
     mapping(bytes32 requestId => Payment payment) public paymentRequests;
-    mapping(address user => mapping(address friendaddress => FriendshipStatus)) private friendships;
+    mapping(address user => mapping(address friendaddress => FriendshipStatus)) public friendships;
 
     constructor() Ownable(msg.sender) { }
 
     function sendFriendRequest(address to) external {
-        FriendshipStatus friendsStatus = friendships[to][msg.sender];
+        FriendshipStatus friendsStatus = friendships[msg.sender][to];
 
         if (friendsStatus == FriendshipStatus.RequestedByThem) {
             friendships[msg.sender][to] = FriendshipStatus.Friends;
@@ -138,6 +138,10 @@ contract FriendPayments is ReentrancyGuard, Ownable {
         } else {
             revert NoFriendRequestToReject();
         }
+    }
+
+    function getFriendshipStatus(address user, address friend) external view returns (uint256) {
+        return uint256(friendships[user][friend]);
     }
 
     function isFriendsWithMe(address to) external view returns (bool) {
