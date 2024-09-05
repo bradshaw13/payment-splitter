@@ -34,6 +34,7 @@ contract FriendPayments is ReentrancyGuard, Ownable {
         RequestedByMe, // 1 - I have sent a friendship request to them
         RequestedByThem, // 2 - They have sent a friendship request to me
         Friends // 3 - We are friends
+
     }
 
     enum PaymentStatus {
@@ -63,7 +64,12 @@ contract FriendPayments is ReentrancyGuard, Ownable {
     event FriendRequestRescinded(address indexed from, address indexed to);
     event FriendRequestSent(address indexed from, address indexed to);
     event FriendRequestRejected(address indexed rejector, address indexed rejected);
-    event PaymentRequested(bytes32 indexed uniqueId, address indexed requestor, string paymentName, address[] debtors);
+    event PaymentRequested(
+        bytes32 indexed uniqueId, address indexed requestor, address indexed debtors, string paymentName
+    );
+    event ArbitraryPaymentSent(
+        address indexed sender, address indexed debtor, uint256 indexed amount, string paymentName
+    );
 
     // State Variables
     uint256 public activeRequestCountMax = 20;
@@ -76,6 +82,7 @@ contract FriendPayments is ReentrancyGuard, Ownable {
     constructor() Ownable(msg.sender) { }
 
     function sendFriendRequest(address to) external {
+        // TODO: Check if to == msg.sender
         FriendshipStatus friendsStatus = friendships[msg.sender][to];
 
         if (friendsStatus == FriendshipStatus.RequestedByThem) {
@@ -167,6 +174,35 @@ contract FriendPayments is ReentrancyGuard, Ownable {
     /*                   PAYMENT OPERATIONS                       */
     /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:´*.´•*.•°.•°:°.´:•˚°.*°.˚:*.´+°.•*/
 
+    function sendArbitraryPayment(
+        string memory _paymentName,
+        address[] memory _debtors,
+        uint256[] memory _amounts
+    )
+        external
+        payable
+        nonReentrant
+    {
+        if (_debtors.length != _amounts.length) {
+            revert IncorrectPaymentAmount();
+        }
+
+        uint256 totalAmount = 0;
+        for (uint256 i = 0; i < _debtors.length; i++) {
+            totalAmount += _amounts[i];
+            (bool sent, bytes memory data) = _debtors[i].call{ value: _amounts[i] }("");
+            if (!sent) {
+                revert InvalidEthPayment();
+            }
+            // create event for htis
+            emit ArbitraryPaymentSent(msg.sender, _debtors[i], _amounts[i], _paymentName);
+        }
+
+        if (msg.value < totalAmount) {
+            revert IncorrectPaymentAmount();
+        }
+    }
+
     function fulfillPayment(bytes32 _paymentId, address debtorToPay) external payable nonReentrant {
         Payment storage payment = paymentRequests[_paymentId];
 
@@ -207,6 +243,7 @@ contract FriendPayments is ReentrancyGuard, Ownable {
         uint256 _expirationTime
     )
         public
+        returns (bytes32)
     {
         if (activeRequestCount[msg.sender] > activeRequestCountMax) {
             revert MaximumRequestsOut();
@@ -236,11 +273,12 @@ contract FriendPayments is ReentrancyGuard, Ownable {
                 revert NotFriends(_debtors[i]);
             }
             newPayment.debtorStatus[_debtors[i]] = DebtorStatus.InDebt;
+            emit PaymentRequested(uniqueId, msg.sender, _debtors[i], _paymentName);
         }
 
-        emit PaymentRequested(uniqueId, msg.sender, _paymentName, _debtors);
-
         ++paymentCount[msg.sender];
+
+        return uniqueId;
     }
 
     // Expire a request so someone's request count isn't held up because of one person
