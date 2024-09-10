@@ -117,6 +117,8 @@ contract FriendPayments is ReentrancyGuard, Ownable {
 
         if (status == FriendshipStatus.RequestedByMe) {
             friendships[msg.sender][to] = FriendshipStatus.NotFriends;
+            friendships[to][msg.sender] = FriendshipStatus.NotFriends;
+
             emit FriendRequestRescinded(msg.sender, to);
         } else {
             revert InvalidFriendRequestRescind();
