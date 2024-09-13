@@ -153,10 +153,6 @@ contract FriendPayments is ReentrancyGuard, Ownable {
         return uint256(friendships[user][friend]);
     }
 
-    function isFriendsWithMe(address to) external view returns (bool) {
-        return (friendships[msg.sender][to] == FriendshipStatus.Friends);
-    }
-
     function isMutualFriends(address mainFriend, address poi) external view returns (bool) {
         return (
             friendships[mainFriend][msg.sender] == FriendshipStatus.Friends
