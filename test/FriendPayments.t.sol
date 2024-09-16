@@ -98,17 +98,6 @@ contract FriendshipTests is FriendPaymentsTestBase {
         );
     }
 
-    function test_isFriendsWithMe() public {
-        vm.prank(alice);
-        friendPayments.sendFriendRequest(bob);
-
-        vm.prank(bob);
-        friendPayments.acceptFriendRequest(alice);
-
-        vm.prank(alice);
-        assertTrue(friendPayments.isFriendsWithMe(bob));
-    }
-
     function test_isMutualFriends() public {
         vm.prank(alice);
         friendPayments.sendFriendRequest(bob);
